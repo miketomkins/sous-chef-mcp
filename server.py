@@ -45,7 +45,7 @@ BASE_DIR = Path(__file__).parent
 CONFIG_DIR = BASE_DIR / "config"
 DATA_DIR = BASE_DIR / "data"
 
-GITHUB_REPO = "mike665/sous-chef-mcp"
+GITHUB_REPO = "miketomkins/sous-chef-mcp"
 
 SITES_FILE = CONFIG_DIR / "sites.yaml"
 PANTRY_FILE = CONFIG_DIR / "pantry_staples.yaml"

@@ -30,7 +30,7 @@ Almost every major recipe website embeds structured JSON-LD data using the [sche
 ## Quick Start
 
 ```bash
-git clone https://github.com/mike665/sous-chef-mcp.git
+git clone https://github.com/miketomkins/sous-chef-mcp.git
 cd sous-chef-mcp
 bash setup.sh
 ```

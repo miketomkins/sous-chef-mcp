@@ -13,6 +13,7 @@ import re
 import os
 import sys
 import logging
+import subprocess
 from datetime import datetime, date
 from typing import Optional
 from contextlib import asynccontextmanager
@@ -460,6 +461,18 @@ class PantryInput(BaseModel):
         return v.lower()
 
 
+class AppleNoteInput(BaseModel):
+    """Input for exporting formatted HTML to Apple Notes."""
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    title: str = Field(..., description="Title for the Apple Note")
+    html_body: str = Field(..., description="HTML content to write to the note")
+    folder: Optional[str] = Field(
+        default=None,
+        description="Apple Notes folder name. If omitted, uses the default Notes folder.",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
@@ -619,18 +632,18 @@ async def recipe_build_shopping_list(params: ShoppingListInput, ctx: Context) ->
     },
 )
 async def recipe_format_menu(params: MenuFormatInput, ctx: Context) -> str:
-    """Build a complete weekly menu with categorized shopping list, formatted
-    for direct export to Apple Notes.
+    """Build a complete weekly menu with categorized shopping list as HTML.
 
     Fetches all recipe URLs, extracts verified ingredients, categorizes by store
-    section, and outputs the formatted text matching the household's preferred
-    Apple Notes layout.
+    section, and outputs formatted HTML. The returned formatted_menu is ready-to-use
+    HTML — pass it directly to recipe_export_apple_note as html_body without
+    modifying or reformatting it.
 
     Args:
         params (MenuFormatInput): Menu entries, optional week start date, extra items.
 
     Returns:
-        str: The formatted menu + shopping list text ready for Apple Notes.
+        str: JSON with formatted_menu (HTML string) and errors list.
     """
     client = ctx.request_context.lifespan_context["http"]
     pantry_config = ctx.request_context.lifespan_context["pantry"]
@@ -788,6 +801,67 @@ async def recipe_format_menu(params: MenuFormatInput, ctx: Context) -> str:
 
     formatted = "\n".join(html)
     return json.dumps({"formatted_menu": formatted, "errors": errors})
+
+
+@mcp.tool(
+    name="recipe_export_apple_note",
+    annotations={
+        "title": "Export to Apple Notes",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": False,
+    },
+)
+async def recipe_export_apple_note(params: AppleNoteInput, ctx: Context) -> str:
+    """Export HTML content directly to Apple Notes, preserving all formatting.
+
+    Use this after recipe_format_menu to write the formatted_menu HTML to Apple
+    Notes. Pass the formatted_menu value directly as html_body — do NOT rewrite
+    or reformat it.
+
+    Args:
+        params (AppleNoteInput): Title, HTML body, and optional folder name.
+
+    Returns:
+        str: Confirmation with the note title.
+    """
+    # Escape the HTML for embedding in AppleScript
+    escaped_html = params.html_body.replace("\\", "\\\\").replace('"', '\\"')
+    escaped_title = params.title.replace("\\", "\\\\").replace('"', '\\"')
+
+    if params.folder:
+        escaped_folder = params.folder.replace("\\", "\\\\").replace('"', '\\"')
+        applescript = f'''
+tell application "Notes"
+    set targetFolder to folder "{escaped_folder}"
+    make new note at targetFolder with properties {{name:"{escaped_title}", body:"{escaped_html}"}}
+end tell
+'''
+    else:
+        applescript = f'''
+tell application "Notes"
+    make new note with properties {{name:"{escaped_title}", body:"{escaped_html}"}}
+end tell
+'''
+
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", applescript],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode != 0:
+            return json.dumps({
+                "error": f"AppleScript failed: {result.stderr.strip()}",
+            })
+        return json.dumps({
+            "status": "ok",
+            "message": f"Note '{params.title}' created in Apple Notes",
+        })
+    except subprocess.TimeoutExpired:
+        return json.dumps({"error": "AppleScript timed out"})
+    except Exception as e:
+        return json.dumps({"error": f"Failed to create note: {str(e)}"})
 
 
 @mcp.tool(

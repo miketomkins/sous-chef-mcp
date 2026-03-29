@@ -21,7 +21,7 @@ from pathlib import Path
 import httpx
 from bs4 import BeautifulSoup
 from pydantic import BaseModel, Field, ConfigDict, field_validator
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP, Context
 
 # ---------------------------------------------------------------------------
 # Logging (stderr only, stdout reserved for stdio transport)
@@ -321,7 +321,7 @@ def _is_pantry_staple(ingredient: str, pantry_list: list[str]) -> bool:
 # ---------------------------------------------------------------------------
 
 @asynccontextmanager
-async def app_lifespan():
+async def app_lifespan(app):
     """Load configuration files at server startup."""
     sites = _load_yaml(SITES_FILE, default={"sites": {}})
     pantry = _load_yaml(PANTRY_FILE, default={"staples": []})
@@ -474,7 +474,7 @@ class PantryInput(BaseModel):
         "openWorldHint": True,
     },
 )
-async def recipe_get(params: RecipeUrlInput, ctx=None) -> str:
+async def recipe_get(params: RecipeUrlInput, ctx: Context) -> str:
     """Fetch and extract structured recipe data from a URL using schema.org JSON-LD.
 
     Returns the recipe name, ingredients, prep/cook times, servings, and instructions.
@@ -487,7 +487,7 @@ async def recipe_get(params: RecipeUrlInput, ctx=None) -> str:
     Returns:
         str: JSON with recipe name, url, ingredients, times, instructions, servings.
     """
-    client = ctx.request_context.lifespan_state["http"]
+    client = ctx.request_context.lifespan_context["http"]
 
     try:
         resp = await client.get(params.url)
@@ -502,7 +502,7 @@ async def recipe_get(params: RecipeUrlInput, ctx=None) -> str:
         return json.dumps({
             "error": "No schema.org Recipe found on this page. The site may not use JSON-LD structured data.",
             "url": params.url,
-            "suggestion": "Try using recipe_get_fallback or manually verify the ingredients.",
+            "suggestion": "The site may not use JSON-LD structured data. Manually verify the ingredients.",
         })
 
     recipe = _extract_recipe_data(recipes[0], params.url)
@@ -523,7 +523,7 @@ async def recipe_get(params: RecipeUrlInput, ctx=None) -> str:
         "openWorldHint": True,
     },
 )
-async def recipe_build_shopping_list(params: ShoppingListInput, ctx=None) -> str:
+async def recipe_build_shopping_list(params: ShoppingListInput, ctx: Context) -> str:
     """Fetch multiple recipes and build a categorized, deduplicated shopping list.
 
     Each ingredient is tagged with which recipe(s) it belongs to. Pantry staples
@@ -536,8 +536,8 @@ async def recipe_build_shopping_list(params: ShoppingListInput, ctx=None) -> str
         str: JSON with categorized shopping list, pantry staples section,
              recipe summaries with cook times, and any warnings.
     """
-    client = ctx.request_context.lifespan_state["http"]
-    pantry_config = ctx.request_context.lifespan_state["pantry"]
+    client = ctx.request_context.lifespan_context["http"]
+    pantry_config = ctx.request_context.lifespan_context["pantry"]
     pantry_list = pantry_config.get("staples", [])
     exclusions = _load_json(EXCLUSIONS_FILE, default=[])
     excluded_ingredients = [e["item"].lower() for e in exclusions if not e["item"].startswith("http")]
@@ -618,7 +618,7 @@ async def recipe_build_shopping_list(params: ShoppingListInput, ctx=None) -> str
         "openWorldHint": True,
     },
 )
-async def recipe_format_menu(params: MenuFormatInput, ctx=None) -> str:
+async def recipe_format_menu(params: MenuFormatInput, ctx: Context) -> str:
     """Build a complete weekly menu with categorized shopping list, formatted
     for direct export to Apple Notes.
 
@@ -632,8 +632,8 @@ async def recipe_format_menu(params: MenuFormatInput, ctx=None) -> str:
     Returns:
         str: The formatted menu + shopping list text ready for Apple Notes.
     """
-    client = ctx.request_context.lifespan_state["http"]
-    pantry_config = ctx.request_context.lifespan_state["pantry"]
+    client = ctx.request_context.lifespan_context["http"]
+    pantry_config = ctx.request_context.lifespan_context["pantry"]
     pantry_list = pantry_config.get("staples", [])
     exclusions = _load_json(EXCLUSIONS_FILE, default=[])
     excluded_ingredients = [e["item"].lower() for e in exclusions if not e["item"].startswith("http")]
@@ -711,8 +711,7 @@ async def recipe_format_menu(params: MenuFormatInput, ctx=None) -> str:
 
             # Check pantry
             if _is_pantry_staple(ingredient, pantry_list):
-                if ingredient not in pantry_section:
-                    pantry_section.append(f"{ingredient} ({recipe['name']})")
+                pantry_section.append(f"{ingredient} ({recipe['name']})")
                 continue
 
             category = _categorize_ingredient(ingredient)
@@ -800,7 +799,7 @@ async def recipe_format_menu(params: MenuFormatInput, ctx=None) -> str:
         "openWorldHint": False,
     },
 )
-async def recipe_add_site(params: SiteConfigInput, ctx=None) -> str:
+async def recipe_add_site(params: SiteConfigInput, ctx: Context) -> str:
     """Add a new recipe website to the discovery configuration.
 
     This allows Claude to search the site by category or keyword. Recipe extraction
@@ -813,7 +812,7 @@ async def recipe_add_site(params: SiteConfigInput, ctx=None) -> str:
     Returns:
         str: Confirmation with updated site list.
     """
-    sites = ctx.request_context.lifespan_state["sites"]
+    sites = ctx.request_context.lifespan_context["sites"]
     if "sites" not in sites:
         sites["sites"] = {}
 
@@ -842,13 +841,13 @@ async def recipe_add_site(params: SiteConfigInput, ctx=None) -> str:
         "openWorldHint": False,
     },
 )
-async def recipe_list_sites(ctx=None) -> str:
+async def recipe_list_sites(ctx: Context) -> str:
     """List all configured recipe websites with their search patterns and categories.
 
     Returns:
         str: JSON list of configured sites.
     """
-    sites = ctx.request_context.lifespan_state["sites"]
+    sites = ctx.request_context.lifespan_context["sites"]
     return json.dumps(sites.get("sites", {}), indent=2)
 
 
@@ -862,7 +861,7 @@ async def recipe_list_sites(ctx=None) -> str:
         "openWorldHint": False,
     },
 )
-async def recipe_add_favorite(params: FavoriteInput, ctx=None) -> str:
+async def recipe_add_favorite(params: FavoriteInput, ctx: Context) -> str:
     """Add a recipe to the favorites list for future reference.
 
     Args:
@@ -903,7 +902,7 @@ async def recipe_add_favorite(params: FavoriteInput, ctx=None) -> str:
         "openWorldHint": False,
     },
 )
-async def recipe_remove_favorite(params: FavoriteInput, ctx=None) -> str:
+async def recipe_remove_favorite(params: FavoriteInput, ctx: Context) -> str:
     """Remove a recipe from the favorites list.
 
     Args:
@@ -935,7 +934,7 @@ async def recipe_remove_favorite(params: FavoriteInput, ctx=None) -> str:
         "openWorldHint": False,
     },
 )
-async def recipe_list_favorites(ctx=None) -> str:
+async def recipe_list_favorites(ctx: Context) -> str:
     """List all favorited recipes with their tags and dates.
 
     Returns:
@@ -955,7 +954,7 @@ async def recipe_list_favorites(ctx=None) -> str:
         "openWorldHint": False,
     },
 )
-async def recipe_add_exclusion(params: ExclusionInput, ctx=None) -> str:
+async def recipe_add_exclusion(params: ExclusionInput, ctx: Context) -> str:
     """Add a recipe or ingredient to the exclusion list.
 
     Excluded recipes won't be suggested. Excluded ingredients will be flagged
@@ -997,7 +996,7 @@ async def recipe_add_exclusion(params: ExclusionInput, ctx=None) -> str:
         "openWorldHint": False,
     },
 )
-async def recipe_remove_exclusion(params: ExclusionInput, ctx=None) -> str:
+async def recipe_remove_exclusion(params: ExclusionInput, ctx: Context) -> str:
     """Remove an item from the exclusion list.
 
     Args:
@@ -1023,7 +1022,7 @@ async def recipe_remove_exclusion(params: ExclusionInput, ctx=None) -> str:
         "openWorldHint": False,
     },
 )
-async def recipe_list_exclusions(ctx=None) -> str:
+async def recipe_list_exclusions(ctx: Context) -> str:
     """List all excluded recipes and ingredients with reasons.
 
     Returns:
@@ -1043,7 +1042,7 @@ async def recipe_list_exclusions(ctx=None) -> str:
         "openWorldHint": False,
     },
 )
-async def recipe_manage_pantry(params: PantryInput, ctx=None) -> str:
+async def recipe_manage_pantry(params: PantryInput, ctx: Context) -> str:
     """Add or remove items from the pantry staples list.
 
     Pantry staples are ingredients you always have on hand. They appear in a
@@ -1055,7 +1054,7 @@ async def recipe_manage_pantry(params: PantryInput, ctx=None) -> str:
     Returns:
         str: Updated pantry staples list.
     """
-    pantry = ctx.request_context.lifespan_state["pantry"]
+    pantry = ctx.request_context.lifespan_context["pantry"]
     staples = pantry.get("staples", [])
 
     if params.action == "add":
@@ -1086,13 +1085,13 @@ async def recipe_manage_pantry(params: PantryInput, ctx=None) -> str:
         "openWorldHint": False,
     },
 )
-async def recipe_list_pantry(ctx=None) -> str:
+async def recipe_list_pantry(ctx: Context) -> str:
     """List all items on the pantry staples list.
 
     Returns:
         str: JSON list of pantry staples.
     """
-    pantry = ctx.request_context.lifespan_state["pantry"]
+    pantry = ctx.request_context.lifespan_context["pantry"]
     return json.dumps({"staples": pantry.get("staples", [])}, indent=2)
 
 
@@ -1106,7 +1105,7 @@ async def recipe_list_pantry(ctx=None) -> str:
         "openWorldHint": False,
     },
 )
-async def recipe_get_history(ctx=None) -> str:
+async def recipe_get_history(ctx: Context) -> str:
     """List recently used recipes with dates, useful for avoiding repeats.
 
     Returns:

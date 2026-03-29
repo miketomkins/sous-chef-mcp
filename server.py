@@ -14,7 +14,7 @@ import os
 import sys
 import logging
 import subprocess
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Optional
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -770,6 +770,15 @@ async def recipe_format_menu(params: MenuFormatInput, ctx: Context) -> str:
                 logger.error("Failed to fetch %s: %s", url, e)
                 errors.append(f"Failed to fetch {url}: {str(e)}")
 
+    # Check for recipes used in the last 7 days
+    history = _load_json(HISTORY_FILE, default=[])
+    recent_cutoff = (datetime.now() - timedelta(days=7)).isoformat()
+    recent_urls = {h["url"] for h in history if h.get("last_used", "") >= recent_cutoff}
+    repeat_warnings = []
+    for url, recipe in recipes_by_url.items():
+        if url in recent_urls:
+            repeat_warnings.append(recipe["name"])
+
     # Build the menu as HTML so Apple Notes preserves formatting
     html = []
     html.append(f"<h1>Weekly Menu {header_start}</h1>")
@@ -916,7 +925,14 @@ async def recipe_format_menu(params: MenuFormatInput, ctx: Context) -> str:
         html.append("</ul>")
 
     formatted = "\n".join(html)
-    return json.dumps({"formatted_menu": formatted, "errors": errors})
+    result = {"formatted_menu": formatted, "errors": errors}
+    if repeat_warnings:
+        result["recent_repeats"] = repeat_warnings
+        result["repeat_warning"] = (
+            f"These recipes were used in the last 7 days: {', '.join(repeat_warnings)}. "
+            "Consider swapping them unless repeats were requested."
+        )
+    return json.dumps(result)
 
 
 @mcp.tool(

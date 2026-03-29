@@ -346,7 +346,7 @@ async def app_lifespan(app):
 # MCP Server
 # ---------------------------------------------------------------------------
 
-mcp = FastMCP("recipe_mcp", lifespan=app_lifespan)
+mcp = FastMCP("Sous Chef MCP", lifespan=app_lifespan)
 
 
 # ---------------------------------------------------------------------------

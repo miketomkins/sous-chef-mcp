@@ -1327,6 +1327,28 @@ async def recipe_get_history(ctx: Context) -> str:
 
 
 @mcp.tool(
+    name="recipe_clear_history",
+    annotations={
+        "title": "Clear Recipe History",
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def recipe_clear_history(ctx: Context) -> str:
+    """Clear all recipe history, useful for starting a new meal planning cycle.
+
+    Returns:
+        str: Confirmation message with the number of entries cleared.
+    """
+    history = _load_json(HISTORY_FILE, default=[])
+    count = len(history)
+    _save_json(HISTORY_FILE, [])
+    return json.dumps({"cleared": count, "message": f"Cleared {count} history entries."})
+
+
+@mcp.tool(
     name="recipe_feedback",
     annotations={
         "title": "Submit Feedback or Bug Report",

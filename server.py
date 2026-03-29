@@ -1391,6 +1391,73 @@ def _save_feedback_locally(params, hostname: str) -> str:
     })
 
 
+@mcp.tool(
+    name="recipe_update",
+    annotations={
+        "title": "Update Sous Chef MCP",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def recipe_update(ctx: Context) -> str:
+    """Pull the latest version of Sous Chef MCP from GitHub and reinstall dependencies.
+
+    After a successful update, Claude Desktop must be restarted to load the new version.
+
+    Returns:
+        str: Summary of what was updated, or confirmation that it's already up to date.
+    """
+    try:
+        # Pull latest
+        pull = subprocess.run(
+            ["git", "pull", "--ff-only"],
+            capture_output=True, text=True, timeout=30, cwd=str(BASE_DIR),
+        )
+        if pull.returncode != 0:
+            logger.error("git pull failed: %s", pull.stderr.strip())
+            return json.dumps({
+                "error": f"git pull failed: {pull.stderr.strip()}",
+                "suggestion": "There may be local changes. The developer should resolve this manually.",
+            })
+
+        pull_output = pull.stdout.strip()
+        already_current = "Already up to date" in pull_output
+
+        # Reinstall deps in case requirements.txt changed
+        if not already_current:
+            venv_pip = str(BASE_DIR / "venv" / "bin" / "pip")
+            pip_result = subprocess.run(
+                [venv_pip, "install", "-r", str(BASE_DIR / "requirements.txt"), "-q"],
+                capture_output=True, text=True, timeout=60, cwd=str(BASE_DIR),
+            )
+            if pip_result.returncode != 0:
+                logger.error("pip install failed: %s", pip_result.stderr.strip())
+                return json.dumps({
+                    "error": f"Updated code but pip install failed: {pip_result.stderr.strip()}",
+                })
+
+        if already_current:
+            return json.dumps({
+                "status": "ok",
+                "message": "Sous Chef MCP is already up to date.",
+            })
+        else:
+            return json.dumps({
+                "status": "ok",
+                "message": "Sous Chef MCP updated. Restart Claude Desktop to load the new version.",
+                "details": pull_output,
+            })
+
+    except subprocess.TimeoutExpired:
+        logger.error("Update timed out")
+        return json.dumps({"error": "Update timed out"})
+    except Exception as e:
+        logger.error("Update failed: %s", e)
+        return json.dumps({"error": f"Update failed: {str(e)}"})
+
+
 # ---------------------------------------------------------------------------
 # Helpers: history logging
 # ---------------------------------------------------------------------------

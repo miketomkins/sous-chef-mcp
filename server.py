@@ -25,10 +25,18 @@ from pydantic import BaseModel, Field, ConfigDict, field_validator
 from mcp.server.fastmcp import FastMCP, Context
 
 # ---------------------------------------------------------------------------
-# Logging (stderr only, stdout reserved for stdio transport)
+# Logging (stderr + persistent file)
 # ---------------------------------------------------------------------------
 logging.basicConfig(stream=sys.stderr, level=logging.INFO)
 logger = logging.getLogger("recipe_mcp")
+
+# Add a file handler for persistent error logging
+_LOG_DIR = Path(__file__).parent / "data"
+_LOG_DIR.mkdir(parents=True, exist_ok=True)
+_file_handler = logging.FileHandler(_LOG_DIR / "error.log")
+_file_handler.setLevel(logging.WARNING)
+_file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+logger.addHandler(_file_handler)
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -36,6 +44,8 @@ logger = logging.getLogger("recipe_mcp")
 BASE_DIR = Path(__file__).parent
 CONFIG_DIR = BASE_DIR / "config"
 DATA_DIR = BASE_DIR / "data"
+
+GITHUB_REPO = "mike665/sous-chef-mcp"
 
 SITES_FILE = CONFIG_DIR / "sites.yaml"
 PANTRY_FILE = CONFIG_DIR / "pantry_staples.yaml"
@@ -515,6 +525,33 @@ class AppleNoteInput(BaseModel):
     )
 
 
+class FeedbackInput(BaseModel):
+    """Input for submitting feedback or a bug report."""
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    title: str = Field(
+        ...,
+        description="Short summary of the issue or feedback",
+        min_length=5, max_length=200,
+    )
+    description: str = Field(
+        ...,
+        description="Detailed description of the problem, including what happened and what was expected",
+    )
+    label: str = Field(
+        default="feedback",
+        description="Issue label: 'bug', 'feedback', or 'feature-request'",
+    )
+
+    @field_validator("label")
+    @classmethod
+    def validate_label(cls, v: str) -> str:
+        allowed = ("bug", "feedback", "feature-request")
+        if v.lower() not in allowed:
+            raise ValueError(f"label must be one of: {', '.join(allowed)}")
+        return v.lower()
+
+
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
@@ -548,8 +585,10 @@ async def recipe_get(params: RecipeUrlInput, ctx: Context) -> str:
         resp = await client.get(params.url)
         resp.raise_for_status()
     except httpx.HTTPStatusError as e:
+        logger.error("HTTP %s fetching %s", e.response.status_code, params.url)
         return json.dumps({"error": f"HTTP {e.response.status_code} fetching {params.url}"})
     except httpx.RequestError as e:
+        logger.error("Request failed for %s: %s", params.url, e)
         return json.dumps({"error": f"Request failed for {params.url}: {str(e)}"})
 
     recipes = _extract_jsonld_recipes(resp.text)
@@ -610,8 +649,10 @@ async def recipe_build_shopping_list(params: ShoppingListInput, ctx: Context) ->
                 recipes.append(recipe)
                 _log_history(recipe)
             else:
+                logger.warning("No JSON-LD Recipe found: %s", url)
                 errors.append(f"No JSON-LD Recipe found: {url}")
         except Exception as e:
+            logger.error("Failed to fetch %s: %s", url, e)
             errors.append(f"Failed to fetch {url}: {str(e)}")
 
     # Build categorized list with recipe attribution
@@ -723,8 +764,10 @@ async def recipe_format_menu(params: MenuFormatInput, ctx: Context) -> str:
                     recipes_by_url[url] = recipe
                     _log_history(recipe)
                 else:
+                    logger.warning("No JSON-LD Recipe found: %s", url)
                     errors.append(f"No JSON-LD Recipe found: {url}")
             except Exception as e:
+                logger.error("Failed to fetch %s: %s", url, e)
                 errors.append(f"Failed to fetch {url}: {str(e)}")
 
     # Build the menu as HTML so Apple Notes preserves formatting
@@ -932,8 +975,10 @@ end tell
             "message": f"Note '{params.title}' created in Apple Notes",
         })
     except subprocess.TimeoutExpired:
+        logger.error("AppleScript timed out creating note '%s'", params.title)
         return json.dumps({"error": "AppleScript timed out"})
     except Exception as e:
+        logger.error("Failed to create Apple Note '%s': %s", params.title, e)
         return json.dumps({"error": f"Failed to create note: {str(e)}"})
 
 
@@ -1263,6 +1308,87 @@ async def recipe_get_history(ctx: Context) -> str:
     # Return most recent first
     history.sort(key=lambda x: x.get("last_used", ""), reverse=True)
     return json.dumps(history[:50], indent=2)
+
+
+@mcp.tool(
+    name="recipe_feedback",
+    annotations={
+        "title": "Submit Feedback or Bug Report",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": True,
+    },
+)
+async def recipe_feedback(params: FeedbackInput, ctx: Context) -> str:
+    """Submit feedback, a bug report, or a feature request as a GitHub issue.
+
+    Use this when something went wrong, a recipe didn't extract correctly,
+    the shopping list had issues, or you have an idea for improvement.
+
+    Args:
+        params (FeedbackInput): Title, description, and label (bug/feedback/feature-request).
+
+    Returns:
+        str: Confirmation with the GitHub issue URL if created successfully.
+    """
+    import platform
+    hostname = platform.node()
+
+    body = (
+        f"{params.description}\n\n"
+        f"---\n"
+        f"*Submitted from: {hostname}*\n"
+        f"*Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}*"
+    )
+
+    try:
+        result = subprocess.run(
+            [
+                "gh", "issue", "create",
+                "--repo", GITHUB_REPO,
+                "--title", params.title,
+                "--body", body,
+                "--label", params.label,
+            ],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode != 0:
+            # gh CLI failed — log and fall back to local file
+            logger.error("gh issue create failed: %s", result.stderr.strip())
+            return _save_feedback_locally(params, hostname)
+
+        issue_url = result.stdout.strip()
+        return json.dumps({
+            "status": "ok",
+            "message": f"Issue created: {issue_url}",
+            "url": issue_url,
+        })
+    except FileNotFoundError:
+        # gh CLI not installed
+        logger.warning("gh CLI not found, saving feedback locally")
+        return _save_feedback_locally(params, hostname)
+    except subprocess.TimeoutExpired:
+        logger.error("gh issue create timed out")
+        return _save_feedback_locally(params, hostname)
+
+
+def _save_feedback_locally(params, hostname: str) -> str:
+    """Save feedback to a local file when GitHub is unavailable."""
+    feedback_file = DATA_DIR / "feedback.json"
+    feedback = _load_json(feedback_file, default=[])
+    feedback.append({
+        "title": params.title,
+        "description": params.description,
+        "label": params.label,
+        "hostname": hostname,
+        "date": datetime.now().isoformat(),
+    })
+    _save_json(feedback_file, feedback)
+    return json.dumps({
+        "status": "saved_locally",
+        "message": "Could not reach GitHub. Feedback saved to data/feedback.json for the developer to review.",
+    })
 
 
 # ---------------------------------------------------------------------------

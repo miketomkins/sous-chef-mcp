@@ -28,6 +28,8 @@ Thumbs.db
 data/history.json
 data/favorites.json
 data/exclusions.json
+data/feedback.json
+data/error.log
 config/pantry_staples.yaml
 
 # Keep the data directory structure
